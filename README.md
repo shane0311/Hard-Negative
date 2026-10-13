@@ -1,66 +1,40 @@
 # Difficulty-Controlled Negative Sampling for Cross-Encoder Reranking
 
-Research code for training and evaluating cross-encoder rerankers with difficulty-aware negative sampling. The code supports score-based negative sampling, random-negative mixing, exclusion of the highest-scoring candidates, and a training schedule that gradually shifts from difficulty-aware negatives toward random negatives.
+Research code for training and evaluating cross-encoder rerankers with different negative-sampling strategies. The repository contains multiple training scripts corresponding to different experimental settings, together with utilities for loading training data, generating BM25 candidate sets, and evaluating rerankers.
 
-## Files
+## Repository structure
+
+The main components are:
 
 
-| File                              | Purpose                                                                                                                                                            |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `train.py`                        | Main cross-encoder training script. Builds difficulty-aware and random training examples, applies the decay schedule, trains the reranker, and invokes evaluation. |
-| `load_traindata.py`               | Loads MS MARCO data and precomputed negative scores and implements the negative-sampling strategies.                                                               |
-| `generate_bm25score.py`           | Builds a BM25 index for an`ir_datasets` collection, retrieves top-\(k\) candidates, and writes candidates with BM25 scores to a gzipped TSV file.                  |
-| `eval_msmarco_rerank_ce_large.py` | Evaluates a cross-encoder on MS MARCO dev, TREC DL 2019/2020, and Quora.                                                                                           |
+| File                              | Purpose                                                                                                             |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `train_*.py`                      | Training scripts for different reranker, negative-sampling, and scheduling configurations.                          |
+| `load_traindata.py`               | Loads MS MARCO training data, candidate negatives, and precomputed difficulty scores.                               |
+| `generate_bm25score.py`           | Retrieves BM25 candidates from an`ir_datasets` collection and writes them with BM25 scores.                         |
+| `eval_msmarco_rerank_ce_large.py` | Evaluates trained cross-encoders on MS MARCO and TREC-DL, with additional evaluation hooks used in the experiments. |
 
-> **Important:** the current scripts contain empty path placeholders (`data_folder = ""`, `model_folder = ""`, `model_save_path = ""`, and evaluation paths). Configure these paths before running the code.
+Examples of training scripts included in this code snapshot are `train_decay.py` and `train_top_n_sampling.py`. Other `train_*.py` files may be used for additional experimental configurations.
 
-## Method implemented in the code
+> **Important:** several scripts contain empty path placeholders such as `data_folder = ""`, `model_folder = ""`, and `model_save_path = ""`. Set these paths for your local environment before running the code.
 
-The training pipeline uses an auxiliary model's scores as a proxy for negative difficulty.
+## Overview
 
-For each query, `load_traindata.py` normalizes the auxiliary scores over candidate negatives. The default configuration in `train.py` calls:
+The experiments train cross-encoder rerankers using candidate negatives drawn from a first-stage retrieval pool. An auxiliary cross-encoder can be used to score candidate negatives and provide a difficulty signal.
 
-```python
-get_top_k_top_n_sampling(
-    train_triplets,
-    skip_num=4,
-    k=24,
-    top_n=10,
-)
-```
+Different training scripts implement different experimental settings, including:
 
-This sampler:
+- random negative sampling;
+- difficulty-aware negative sampling;
+- mixtures of difficulty-aware and random negatives;
+- scheduling the contribution of difficulty-aware negatives during training;
+- alternative candidate-generation and model configurations.
 
-1. sorts candidate negatives by score;
-2. removes the 10 highest-scoring candidates;
-3. samples 12 negatives proportionally to the remaining scores; and
-4. samples another 12 negatives randomly from the same remaining pool.
-
-The resulting difficulty-aware training composition therefore contains six positive instances and 24 negative instances per query, where half of the negatives are score-weighted and half are random.
-
-For each selected negative, `train.py` also prepares a random MS MARCO negative. After shuffling the training examples, the script chooses between the difficulty-aware example and its random counterpart with a linearly decreasing probability:
-
-```text
-P(difficulty-aware at position i) ≈ 1 - i / N
-```
-
-where `N` is the total number of shuffled training examples. Early training therefore favors difficulty-aware sampling, while later training increasingly uses random negatives.
-
-## Negative-sampling variants
-
-`load_traindata.py` includes several sampling functions:
-
-- `get_top_k(...)`: 50% score-proportional sampling + 50% random sampling.
-- `get_top_k_without_RS(...)`: all negatives are sampled proportionally to the difficulty scores.
-- `get_top_k_top_n_sampling(...)`: removes the top-scoring `top_n` candidates, then uses 50% score-proportional + 50% random sampling.
-- `get_msmarco_bm25(...)`: selects high- or low-BM25-score negatives.
-- `get_msmarco_bm25_randommultinomial(...)`: combines BM25-score-based multinomial sampling with random sampling.
-
-The active sampler is selected directly in `train.py` by commenting/uncommenting the corresponding call.
+The exact model, candidate pool, sampler, batch size, and scheduling strategy are defined in the corresponding `train_*.py` script.
 
 ## Generating BM25 candidate files
 
-`generate_bm25score.py` can create candidate files from any compatible `ir_datasets` dataset.
+`generate_bm25score.py` generates BM25 candidates for a dataset available through `ir_datasets`.
 
 Example:
 
@@ -71,7 +45,7 @@ python generate_bm25score.py \
   --output data/quora-bm25-top3000.tsv.gz
 ```
 
-Optional debugging:
+For debugging:
 
 ```bash
 python generate_bm25score.py \
@@ -81,14 +55,7 @@ python generate_bm25score.py \
   --debug
 ```
 
-The script:
-
-- loads the corpus, queries, and qrels through `ir_datasets`;
-- tokenizes with English stopword removal and stemming;
-- builds a global BM25 index with `bm25s`;
-- retrieves the top-\(k\) documents for every query;
-- appends judged documents missing from the retrieved set with score `0`; and
-- writes a gzipped TSV file.
+The script loads the corpus, queries, and qrels from `ir_datasets`, builds a BM25 index, retrieves the top-\(k\) documents for each query, and writes the results as a gzipped TSV file.
 
 Output format:
 
@@ -96,57 +63,42 @@ Output format:
 query_id<TAB>passage_id<TAB>query<TAB>passage<TAB>bm25_score
 ```
 
-Because missing judged documents are appended, a query can have more than `k` output rows.
+Judged relevant documents that are missing from the retrieved candidate set are added with score `0`, so the number of output rows for a query can be slightly larger than `k`.
 
 ## Training
 
-Before training, configure the constants and paths near the top of `train.py` and `load_traindata.py`.
+Training configurations are stored directly in the individual `train_*.py` scripts.
 
-The current defaults are:
+Before running an experiment, check the selected script and configure:
 
-```python
-TRAIN_BATCH_SIZE = 16
-EPOCHS = 2
-LEARNING_RATE = 2e-5
+- the training data path;
+- the pretrained cross-encoder checkpoint;
+- the auxiliary difficulty model or score directory, when used;
+- the output directory;
+- batch size and other optimization settings;
+- the candidate/sampling configuration required by that experiment.
 
-skip = 4
-pos_counts = 6
-neg_counts = 24
-
-ALPHA = 0
-model1 = "TinyBert"
-model2 = "MiniLM-L12"
-
-base_model = "Bert-base"
-model_name = "bert-base-uncased"
-```
-
-Set at least:
-
-- `data_folder` in `load_traindata.py`;
-- the model/checkpoint path in `train.py` if not using `bert-base-uncased`;
-- `model_save_path` in `train.py`; and
-- the MS MARCO dev candidate path required by `EvalCERerank`.
-
-Then run:
+For example:
 
 ```bash
-python train.py
+python train_decay.py
 ```
 
-The script fixes the PyTorch, NumPy, and Python random seeds to `0`, creates a `sentence_transformers.CrossEncoder` with `max_length=512`, and trains for two epochs with mixed precision enabled.
+or:
 
-Warmup steps are computed as:
-
-```text
-number_of_training_examples / (batch_size * 10)
+```bash
+python train_top_n_sampling.py
 ```
 
-and the same value is used as the evaluation interval.
+The provided training scripts use `sentence-transformers` cross-encoders and save the trained model to the configured output directory. Random seeds are set in the scripts for Python, NumPy, and PyTorch.
+
+Because this repository contains multiple experimental training scripts, there is no single global training configuration. Refer to the corresponding script for the exact model and hyperparameters used in a particular experiment.
 
 ## Evaluation
 
-`EvalCERerank` evaluates the cross-encoder on:
+`EvalCERerank` is used during training and for reranking evaluation.
+
+The provided evaluator reports metrics including:
 
 - **MS MARCO dev**
   - MRR@10
@@ -156,29 +108,44 @@ and the same value is used as the evaluation interval.
   - nDCG@10
 - **TREC Deep Learning 2020**
   - nDCG@10
-- **BEIR Quora**
-  - nDCG@10 through `eval_ndcg_10_training`
 
-The evaluator returns MS MARCO MRR, which is the score used by the `sentence-transformers` training loop for model selection.
+The evaluation code also contains a project-specific hook for additional nDCG evaluation.
 
-When an evaluation output path is supplied, results are appended to:
+For MS MARCO dev, the evaluator expects a gzipped candidate file with at least:
 
 ```text
-CERerankingEvaluator_<name>_results_@10.csv
+query_id<TAB>passage_id<TAB>query<TAB>passage
 ```
 
-## Evaluation data behavior
-
-For MS MARCO dev, the evaluator expects a gzipped candidate file with at least four columns:
+A fifth score column is also supported:
 
 ```text
-query_id<TAB>passage_id<TAB>query<TAB>passage[<TAB>score]
+query_id<TAB>passage_id<TAB>query<TAB>passage<TAB>score
 ```
 
-It obtains relevance judgments from:
+MS MARCO relevance judgments are loaded through:
 
 ```python
 ir_datasets.load("msmarco-passage/dev/judged")
 ```
 
-For TREC DL 2019 and 2020, the script downloads the official query, qrel, and top-1000 files if they are not already present in the configured evaluation directory.
+For TREC DL 2019 and 2020, the evaluator downloads the official query, qrel, and candidate files if they are not already available in the configured evaluation directory.
+
+When CSV output is enabled, evaluation results are written to files of the form:
+
+```text
+CERerankingEvaluator_<name>_results_@10.csv
+```
+
+## Reproducibility
+
+The training scripts set random seeds for Python, NumPy, and PyTorch. However, exact results can still depend on the CUDA, PyTorch, and `sentence-transformers` versions and on GPU nondeterminism.
+
+For reproducible experiments, record:
+
+- the exact training script used;
+- model checkpoints;
+- candidate files;
+- difficulty-score files;
+- package versions;
+- GPU/CUDA environment.
