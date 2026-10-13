@@ -182,4 +182,3 @@ ir_datasets.load("msmarco-passage/dev/judged")
 ```
 
 For TREC DL 2019 and 2020, the script downloads the official query, qrel, and top-1000 files if they are not already present in the configured evaluation directory.
-# Hard-Negative
